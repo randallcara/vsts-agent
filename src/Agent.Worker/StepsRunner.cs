@@ -43,161 +43,180 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             //  Succeeded
             //  SucceededWithIssues
             CancellationTokenRegistration? jobCancelRegister = null;
+            CancellationTokenRegistration? jobCancelConditionReevaluateRegister = null;
             jobContext.Variables.Agent_JobStatus = jobContext.Result ?? TaskResult.Succeeded;
-            foreach (IStep step in steps)
+
+            jobCancelRegister = jobContext.CancellationToken.Register(() =>
             {
-                Trace.Info($"Processing step: DisplayName='{step.DisplayName}', ContinueOnError={step.ContinueOnError}, Enabled={step.Enabled}");
-                ArgUtil.Equal(true, step.Enabled, nameof(step.Enabled));
-                ArgUtil.NotNull(step.ExecutionContext, nameof(step.ExecutionContext));
-                ArgUtil.NotNull(step.ExecutionContext.Variables, nameof(step.ExecutionContext.Variables));
-
-                // Start.
-                step.ExecutionContext.Start();
-
-                // Skip following steps is a failure happened in pre-job steps group.
-                if (stage == JobRunStage.PreJob &&
-                    jobContext.Result != null &&
-                    jobContext.Result != TaskResult.Succeeded &&
-                    jobContext.Result != TaskResult.SucceededWithIssues)
+                if (jobContext.Result == null)
                 {
-                    Trace.Info("Skipping step due to previous step failure in critical steps group.");
-                    step.ExecutionContext.Complete(TaskResult.Skipped);
-                    continue;
+                    // mark job as cancelled
+                    jobContext.Result = TaskResult.Canceled;
+                    jobContext.Variables.Agent_JobStatus = jobContext.Result;
                 }
+            });
 
-                // Variable expansion.
-                List<string> expansionWarnings;
-                step.ExecutionContext.Variables.RecalculateExpanded(out expansionWarnings);
-                expansionWarnings?.ForEach(x => step.ExecutionContext.Warning(x));
-
-                var expressionManager = HostContext.GetService<IExpressionManager>();
-                try
+            try
+            {
+                foreach (IStep step in steps)
                 {
-                    // Register job cancellation call back only if job cancellation token not been fire before each step run
-                    if (!jobContext.CancellationToken.IsCancellationRequested)
-                    {
-                        // Test the condition again. The job was canceled after the condition was originally evaluated.
-                        jobCancelRegister = jobContext.CancellationToken.Register(() =>
-                        {
-                            // mark job as cancelled
-                            jobContext.Result = TaskResult.Canceled;
-                            jobContext.Variables.Agent_JobStatus = jobContext.Result;
+                    Trace.Info($"Processing step: DisplayName='{step.DisplayName}', ContinueOnError={step.ContinueOnError}, Enabled={step.Enabled}");
+                    ArgUtil.Equal(true, step.Enabled, nameof(step.Enabled));
+                    ArgUtil.NotNull(step.ExecutionContext, nameof(step.ExecutionContext));
+                    ArgUtil.NotNull(step.ExecutionContext.Variables, nameof(step.ExecutionContext.Variables));
 
-                            step.ExecutionContext.Debug($"Re-evaluate condition on job cancellation for step: '{step.DisplayName}'.");
-                            bool conditionReTestResult;
-                            if (HostContext.AgentShutdownToken.IsCancellationRequested)
-                            {
-                                step.ExecutionContext.Debug($"Skip Re-evaluate condition on agent shutdown.");
-                                conditionReTestResult = false;
-                            }
-                            else
-                            {
-                                if (stage == JobRunStage.PostJob)
-                                {
-                                    step.ExecutionContext.Debug($"Continue run post-job step: '{step.DisplayName}'");
-                                    conditionReTestResult = true;
-                                }
-                                else
-                                {
-                                    try
-                                    {
-                                        conditionReTestResult = expressionManager.Evaluate(step.ExecutionContext, step.Condition, hostTracingOnly: true);
-                                    }
-                                    catch (Exception ex)
-                                    {
-                                        // Cancel the step since we get exception while re-evaluate step condition.
-                                        Trace.Info("Caught exception from expression when re-test condition on job cancellation.");
-                                        step.ExecutionContext.Error(ex);
-                                        conditionReTestResult = false;
-                                    }
-                                }
-                            }
+                    // Start.
+                    step.ExecutionContext.Start();
 
-                            if (!conditionReTestResult)
-                            {
-                                // Cancel the step.
-                                Trace.Info("Cancel current running step.");
-                                step.ExecutionContext.CancelToken();
-                            }
-                        });
-                    }
-
-                    // Evaluate condition.
-                    step.ExecutionContext.Debug($"Evaluating condition for step: '{step.DisplayName}'");
-                    Exception conditionEvaluateError = null;
-                    bool conditionResult;
-                    if (HostContext.AgentShutdownToken.IsCancellationRequested)
+                    // Skip following steps is a failure happened in pre-job steps group.
+                    if (stage == JobRunStage.PreJob &&
+                        jobContext.Result != null &&
+                        jobContext.Result != TaskResult.Succeeded &&
+                        jobContext.Result != TaskResult.SucceededWithIssues)
                     {
-                        step.ExecutionContext.Debug($"Skip evaluate condition on agent shutdown.");
-                        conditionResult = false;
-                    }
-                    else
-                    {
-                        if (stage == JobRunStage.PostJob)
-                        {
-                            step.ExecutionContext.Debug($"Always run post-job step: '{step.DisplayName}'");
-                            conditionResult = true;
-                        }
-                        else
-                        {
-                            try
-                            {
-                                conditionResult = expressionManager.Evaluate(step.ExecutionContext, step.Condition);
-                            }
-                            catch (Exception ex)
-                            {
-                                Trace.Info("Caught exception from expression.");
-                                Trace.Error(ex);
-                                conditionResult = false;
-                                conditionEvaluateError = ex;
-                            }
-                        }
-                    }
-
-                    // no evaluate error but condition is false
-                    if (!conditionResult && conditionEvaluateError == null)
-                    {
-                        // Condition == false
-                        Trace.Info("Skipping step due to condition evaluation.");
+                        Trace.Info("Skipping step due to previous step failure in critical steps group.");
                         step.ExecutionContext.Complete(TaskResult.Skipped);
                         continue;
                     }
 
-                    if (conditionEvaluateError != null)
+                    // Variable expansion.
+                    List<string> expansionWarnings;
+                    step.ExecutionContext.Variables.RecalculateExpanded(out expansionWarnings);
+                    expansionWarnings?.ForEach(x => step.ExecutionContext.Warning(x));
+
+                    var expressionManager = HostContext.GetService<IExpressionManager>();
+                    try
                     {
-                        // fail the step since there is an evaluate error.
-                        step.ExecutionContext.Error(conditionEvaluateError);
-                        step.ExecutionContext.Complete(TaskResult.Failed);
+                        // Register job cancellation call back only if job cancellation token not been fire before each step run
+                        if (!jobContext.CancellationToken.IsCancellationRequested)
+                        {
+                            // Test the condition again. The job was canceled after the condition was originally evaluated.
+                            jobCancelConditionReevaluateRegister = jobContext.CancellationToken.Register(() =>
+                            {
+                                step.ExecutionContext.Debug($"Re-evaluate condition on job cancellation for step: '{step.DisplayName}'.");
+                                bool conditionReTestResult;
+                                if (HostContext.AgentShutdownToken.IsCancellationRequested)
+                                {
+                                    step.ExecutionContext.Debug($"Skip Re-evaluate condition on agent shutdown.");
+                                    conditionReTestResult = false;
+                                }
+                                else
+                                {
+                                    if (stage == JobRunStage.PostJob)
+                                    {
+                                        step.ExecutionContext.Debug($"Continue run post-job step: '{step.DisplayName}'");
+                                        conditionReTestResult = true;
+                                    }
+                                    else
+                                    {
+                                        try
+                                        {
+                                            conditionReTestResult = expressionManager.Evaluate(step.ExecutionContext, step.Condition, hostTracingOnly: true);
+                                        }
+                                        catch (Exception ex)
+                                        {
+                                            // Cancel the step since we get exception while re-evaluate step condition.
+                                            Trace.Info("Caught exception from expression when re-test condition on job cancellation.");
+                                            step.ExecutionContext.Error(ex);
+                                            conditionReTestResult = false;
+                                        }
+                                    }
+                                }
+
+                                if (!conditionReTestResult)
+                                {
+                                    // Cancel the step.
+                                    Trace.Info("Cancel current running step.");
+                                    step.ExecutionContext.CancelToken();
+                                }
+                            });
+                        }
+
+                        // Evaluate condition.
+                        step.ExecutionContext.Debug($"Evaluating condition for step: '{step.DisplayName}'");
+                        Exception conditionEvaluateError = null;
+                        bool conditionResult;
+                        if (HostContext.AgentShutdownToken.IsCancellationRequested)
+                        {
+                            step.ExecutionContext.Debug($"Skip evaluate condition on agent shutdown.");
+                            conditionResult = false;
+                        }
+                        else
+                        {
+                            if (stage == JobRunStage.PostJob)
+                            {
+                                step.ExecutionContext.Debug($"Always run post-job step: '{step.DisplayName}'");
+                                conditionResult = true;
+                            }
+                            else
+                            {
+                                try
+                                {
+                                    conditionResult = expressionManager.Evaluate(step.ExecutionContext, step.Condition);
+                                }
+                                catch (Exception ex)
+                                {
+                                    Trace.Info("Caught exception from expression.");
+                                    Trace.Error(ex);
+                                    conditionResult = false;
+                                    conditionEvaluateError = ex;
+                                }
+                            }
+                        }
+
+                        // no evaluate error but condition is false
+                        if (!conditionResult && conditionEvaluateError == null)
+                        {
+                            // Condition == false
+                            Trace.Info("Skipping step due to condition evaluation.");
+                            step.ExecutionContext.Complete(TaskResult.Skipped);
+                            continue;
+                        }
+
+                        if (conditionEvaluateError != null)
+                        {
+                            // fail the step since there is an evaluate error.
+                            step.ExecutionContext.Error(conditionEvaluateError);
+                            step.ExecutionContext.Complete(TaskResult.Failed);
+                        }
+                        else
+                        {
+                            // Run the step.
+                            await RunStepAsync(step, jobContext.CancellationToken);
+                        }
+                    }
+                    finally
+                    {
+                        if (jobCancelConditionReevaluateRegister != null)
+                        {
+                            jobCancelConditionReevaluateRegister?.Dispose();
+                            jobCancelConditionReevaluateRegister = null;
+                        }
+                    }
+
+                    // Update the job result.
+                    if (step.ExecutionContext.Result == TaskResult.SucceededWithIssues ||
+                        step.ExecutionContext.Result == TaskResult.Failed)
+                    {
+                        Trace.Info($"Update job result with current step result '{step.ExecutionContext.Result}'.");
+                        jobContext.Result = TaskResultUtil.MergeTaskResults(jobContext.Result, step.ExecutionContext.Result.Value);
+                        jobContext.Variables.Agent_JobStatus = jobContext.Result;
                     }
                     else
                     {
-                        // Run the step.
-                        await RunStepAsync(step, jobContext.CancellationToken);
+                        Trace.Info($"No need for updating job result with current step result '{step.ExecutionContext.Result}'.");
                     }
-                }
-                finally
-                {
-                    if (jobCancelRegister != null)
-                    {
-                        jobCancelRegister?.Dispose();
-                        jobCancelRegister = null;
-                    }
-                }
 
-                // Update the job result.
-                if (step.ExecutionContext.Result == TaskResult.SucceededWithIssues ||
-                    step.ExecutionContext.Result == TaskResult.Failed)
-                {
-                    Trace.Info($"Update job result with current step result '{step.ExecutionContext.Result}'.");
-                    jobContext.Result = TaskResultUtil.MergeTaskResults(jobContext.Result, step.ExecutionContext.Result.Value);
-                    jobContext.Variables.Agent_JobStatus = jobContext.Result;
+                    Trace.Info($"Current state: job state = '{jobContext.Result}'");
                 }
-                else
+            }
+            finally
+            {
+                if (jobCancelRegister != null)
                 {
-                    Trace.Info($"No need for updating job result with current step result '{step.ExecutionContext.Result}'.");
+                    jobCancelRegister?.Dispose();
+                    jobCancelRegister = null;
                 }
-
-                Trace.Info($"Current state: job state = '{jobContext.Result}'");
             }
         }
 
