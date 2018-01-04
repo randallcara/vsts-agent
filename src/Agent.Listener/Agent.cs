@@ -1,4 +1,5 @@
 using Microsoft.TeamFoundation.DistributedTask.WebApi;
+using Microsoft.TeamFoundation.DistributedTask.Pipelines;
 using Microsoft.VisualStudio.Services.Agent.Listener.Configuration;
 using Microsoft.VisualStudio.Services.Agent.Util;
 using System;
@@ -104,11 +105,11 @@ namespace Microsoft.VisualStudio.Services.Agent.Listener
                 _inConfigStage = false;
 
                 // Local run
-                if (command.LocalRun)
-                {
-                    var localManager = HostContext.GetService<ILocalRunner>();
-                    return await localManager.LocalRunAsync(command, HostContext.AgentShutdownToken);
-                }
+                // if (command.LocalRun)
+                // {
+                //     var localManager = HostContext.GetService<ILocalRunner>();
+                //     return await localManager.LocalRunAsync(command, HostContext.AgentShutdownToken);
+                // }
 
                 AgentSettings settings = configManager.LoadSettings();
 
@@ -323,7 +324,19 @@ namespace Microsoft.VisualStudio.Services.Agent.Listener
                             }
                             else
                             {
-                                var newJobMessage = JsonUtility.FromString<AgentJobRequestMessage>(message.Body);
+                                var newJobMessage = JsonUtility.FromString<TeamFoundation.DistributedTask.WebApi.AgentJobRequestMessage>(message.Body);
+                                jobDispatcher.Run(AgentJobRequestMessageUtil.Convert(newJobMessage));
+                            }
+                        }
+                        else if (string.Equals(message.MessageType, JobRequestMessageTypes.PipelineAgentJobRequest, StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (autoUpdateInProgress)
+                            {
+                                skipMessageDeletion = true;
+                            }
+                            else
+                            {
+                                var newJobMessage = JsonUtility.FromString<TeamFoundation.DistributedTask.Pipelines.AgentJobRequestMessage>(message.Body);
                                 jobDispatcher.Run(newJobMessage);
                             }
                         }

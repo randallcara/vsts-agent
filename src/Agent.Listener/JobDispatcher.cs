@@ -7,13 +7,14 @@ using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.VisualStudio.Services.WebApi;
+using PipelineContract = Microsoft.TeamFoundation.DistributedTask.Pipelines;
 
 namespace Microsoft.VisualStudio.Services.Agent.Listener
 {
     [ServiceLocator(Default = typeof(JobDispatcher))]
     public interface IJobDispatcher : IAgentService
     {
-        void Run(AgentJobRequestMessage message);
+        void Run(PipelineContract.AgentJobRequestMessage message);
         bool Cancel(JobCancelMessage message);
         Task WaitAsync(CancellationToken token);
         TaskResult GetLocalRunJobResult(AgentJobRequestMessage message);
@@ -59,7 +60,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Listener
             Trace.Info($"Set agent/worker IPC timeout to {_channelTimeout.TotalSeconds} seconds.");
         }
 
-        public void Run(AgentJobRequestMessage jobRequestMessage)
+        public void Run(PipelineContract.AgentJobRequestMessage jobRequestMessage)
         {
             Trace.Info($"Job request {jobRequestMessage.JobId} received.");
 
@@ -268,7 +269,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Listener
             }
         }
 
-        private async Task RunAsync(AgentJobRequestMessage message, WorkerDispatcher previousJobDispatch, CancellationToken jobRequestCancellationToken, CancellationToken workerCancelTimeoutKillToken)
+        private async Task RunAsync(PipelineContract.AgentJobRequestMessage message, WorkerDispatcher previousJobDispatch, CancellationToken jobRequestCancellationToken, CancellationToken workerCancelTimeoutKillToken)
         {
             if (previousJobDispatch != null)
             {
@@ -649,7 +650,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Listener
         }
 
         // TODO: We need send detailInfo back to DT in order to add an issue for the job
-        private async Task CompleteJobRequestAsync(int poolId, AgentJobRequestMessage message, Guid lockToken, TaskResult result, string detailInfo = null)
+        private async Task CompleteJobRequestAsync(int poolId, PipelineContract.AgentJobRequestMessage message, Guid lockToken, TaskResult result, string detailInfo = null)
         {
             Trace.Entering();
             if (HostContext.RunMode == RunMode.Local)

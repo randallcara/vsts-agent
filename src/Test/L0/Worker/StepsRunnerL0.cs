@@ -60,7 +60,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Tests.Worker
                     await _stepsRunner.RunAsync(
                         jobContext: _ec.Object,
                         steps: variableSet.Select(x => x.Object).ToList(),
-                        stage: JobRunStage.PreJob);
+                        stage: JobRunStage.PreScope);
 
                     // Assert.
                     Assert.Equal(TaskResult.Succeeded, _ec.Object.Result ?? TaskResult.Succeeded);
@@ -93,7 +93,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Tests.Worker
                     await _stepsRunner.RunAsync(
                         jobContext: _ec.Object,
                         steps: variableSet.Select(x => x.Object).ToList(),
-                        stage: JobRunStage.PreJob);
+                        stage: JobRunStage.PreScope);
 
                     // Assert.
                     Assert.Equal(TaskResult.Failed, _ec.Object.Result);
@@ -129,7 +129,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Tests.Worker
                     await _stepsRunner.RunAsync(
                         jobContext: _ec.Object,
                         steps: variableSet.Select(x => x.Object).ToList(),
-                        stage: JobRunStage.PreJob);
+                        stage: JobRunStage.PreScope);
 
                     // Assert.
                     Assert.Equal(TaskResult.SucceededWithIssues, _ec.Object.Result);
@@ -162,7 +162,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Tests.Worker
                     await _stepsRunner.RunAsync(
                         jobContext: _ec.Object,
                         steps: variableSet.Select(x => x.Object).ToList(),
-                        stage: JobRunStage.PostJob);
+                        stage: JobRunStage.PostScope);
 
                     // Assert.
                     Assert.Equal(TaskResult.Failed, _ec.Object.Result);

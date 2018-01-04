@@ -15,6 +15,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Handlers
         List<ServiceEndpoint> Endpoints { get; set; }
         Dictionary<string, string> Environment { get; set; }
         IExecutionContext ExecutionContext { get; set; }
+        IHandlerInvoker HandlerInvoker { get; set; }
         string FilePathInputRootDirectory { get; set; }
         Dictionary<string, string> Inputs { get; set; }
         List<SecureFile> SecureFiles { get; set; }
@@ -30,6 +31,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Handlers
         public List<ServiceEndpoint> Endpoints { get; set; }
         public Dictionary<string, string> Environment { get; set; }
         public IExecutionContext ExecutionContext { get; set; }
+        public IHandlerInvoker HandlerInvoker { get; set; }
         public string FilePathInputRootDirectory { get; set; }
         public Dictionary<string, string> Inputs { get; set; }
         public List<SecureFile> SecureFiles { get; set; }

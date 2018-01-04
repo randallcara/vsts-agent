@@ -13,8 +13,10 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Container
     {
         string DockerPath { get; }
         Task<DockerVersion> DockerVersion(IExecutionContext context);
+        Task<int> DockerLogin(IExecutionContext context, string server, string username, string password);
+        Task<int> DockerLogout(IExecutionContext context, string server);
         Task<int> DockerPull(IExecutionContext context, string image);
-        Task<string> DockerCreate(IExecutionContext context, string image, List<MountVolume> mountVolumes);
+        Task<string> DockerCreate(IExecutionContext context, ContainerInfo container, string additionalOptions);
         Task<int> DockerStart(IExecutionContext context, string containerId);
         Task<int> DockerStop(IExecutionContext context, string containerId);
         Task<int> DockerExec(IExecutionContext context, string containerId, string options, string command);
@@ -69,17 +71,27 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Container
             return new DockerVersion(serverVersion, clientVersion);
         }
 
+        public async Task<int> DockerLogin(IExecutionContext context, string server, string username, string password)
+        {
+            return await ExecuteDockerCommandAsync(context, "login", $"--username \"{username}\" --password \"{password}\" {server}", context.CancellationToken);
+        }
+
+        public async Task<int> DockerLogout(IExecutionContext context, string server)
+        {
+            return await ExecuteDockerCommandAsync(context, "logout", $"{server}", context.CancellationToken);
+        }
+
         public async Task<int> DockerPull(IExecutionContext context, string image)
         {
             return await ExecuteDockerCommandAsync(context, "pull", image, context.CancellationToken);
         }
 
-        public async Task<string> DockerCreate(IExecutionContext context, string image, List<MountVolume> mountVolumes)
+        public async Task<string> DockerCreate(IExecutionContext context, ContainerInfo container, string additionalOptions)
         {
             string dockerMountVolumesArgs = string.Empty;
-            if (mountVolumes != null && mountVolumes.Count > 0)
+            if (container.MountVolumes.Count > 0)
             {
-                foreach (var volume in mountVolumes)
+                foreach (var volume in container.MountVolumes)
                 {
                     // replace `"` with `\"` and add `"{0}"` to all path.
                     dockerMountVolumesArgs += $" -v \"{volume.VolumePath.Replace("\"", "\\\"")}\":\"{volume.VolumePath.Replace("\"", "\\\"")}\"";
@@ -90,7 +102,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Container
                 }
             }
 
-            string dockerArgs = $"--name {context.Container.ContainerName} --rm -v /var/run/docker.sock:/var/run/docker.sock {dockerMountVolumesArgs} {image} sleep 999d";
+            string dockerArgs = $"--name {container.ContainerName} --rm -v /var/run/docker.sock:/var/run/docker.sock {additionalOptions} {dockerMountVolumesArgs} {container.ContainerImage} sleep 999d";
             return (await ExecuteDockerCommandAsync(context, "create", dockerArgs)).FirstOrDefault();
         }
 

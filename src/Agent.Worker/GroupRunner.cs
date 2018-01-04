@@ -1,40 +1,82 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Threading.Tasks;
+using Microsoft.TeamFoundation.DistributedTask.Orchestration.Server.Expressions;
 using Microsoft.TeamFoundation.DistributedTask.WebApi;
 using Pipelines = Microsoft.TeamFoundation.DistributedTask.Pipelines;
 using Microsoft.VisualStudio.Services.Agent.Util;
-using System;
-using System.Collections.Generic;
+using Microsoft.VisualStudio.Services.Agent.Worker.Handlers;
 using System.Threading;
-using System.Threading.Tasks;
-using Expressions = Microsoft.TeamFoundation.DistributedTask.Orchestration.Server.Expressions;
 
 namespace Microsoft.VisualStudio.Services.Agent.Worker
 {
-    public interface IStep
+    [ServiceLocator(Default = typeof(GroupRunner))]
+    public interface IGroupRunner : IStep, IAgentService
     {
-        Expressions.INode Condition { get; set; }
-        Pipelines.ContainerReference Container { get; }
-        bool ContinueOnError { get; }
-        string DisplayName { get; }
-        bool Enabled { get; }
-        IExecutionContext ExecutionContext { get; set; }
-        TimeSpan? Timeout { get; }
-        Task RunAsync();
-        void InitializeStep(IExecutionContext jobExecutionContext, Dictionary<Guid, Variables> intraStepVariables = null);
+        Pipelines.GroupStep Group { get; set; }
+        List<IStep> Steps { get; }
     }
 
-    [ServiceLocator(Default = typeof(StepsRunner))]
-    public interface IStepsRunner : IAgentService
+    public sealed class GroupRunner : AgentService, IGroupRunner
     {
-        Task RunAsync(IExecutionContext jobContext, IList<IStep> steps);
-    }
+        private List<IStep> _steps = new List<IStep>();
 
-    public sealed class StepsRunner : AgentService, IStepsRunner
-    {
-        // StepsRunner should never throw exception to caller
-        public async Task RunAsync(IExecutionContext jobContext, IList<IStep> steps)
+        public Pipelines.GroupStep Group { get; set; }
+        public Pipelines.ContainerReference Container => Group?.Container;
+        public List<IStep> Steps => _steps;
+
+        public INode Condition { get; set; }
+
+        public bool ContinueOnError => Group?.ContinueOnError ?? default(bool);
+
+        public string DisplayName => Group?.DisplayName;
+
+        public bool Enabled => Group?.Enabled ?? default(bool);
+
+        public IExecutionContext ExecutionContext { get; set; }
+
+        public TimeSpan? Timeout => (Group?.TimeoutInMinutes ?? 0) > 0 ? (TimeSpan?)TimeSpan.FromMinutes(Group.TimeoutInMinutes) : null;
+
+        public void InitializeStep(IExecutionContext jobExecutionContext, Dictionary<Guid, Variables> intraStepVariables = null)
         {
-            ArgUtil.NotNull(jobContext, nameof(jobContext));
-            ArgUtil.NotNull(steps, nameof(steps));
+            ExecutionContext = jobExecutionContext.CreateChild(Group.Id, Group.DisplayName, Group.Name);
+
+            foreach (var step in Steps)
+            {
+                if (step is ITaskRunner)
+                {
+                    ITaskRunner taskStep = step as ITaskRunner;
+                    ArgUtil.NotNull(taskStep, taskStep.DisplayName);
+                    if (taskStep.Stage == JobRunStage.PreScope)
+                    {
+                        taskStep.ExecutionContext = jobExecutionContext.CreateChild(Guid.NewGuid(), $"{DisplayName}::{StringUtil.Loc("PreGroup", taskStep.Task.DisplayName)}", taskStep.Task.Name, intraStepVariables[taskStep.Task.Id]);
+                    }
+                    else if (taskStep.Stage == JobRunStage.PostScope)
+                    {
+                        taskStep.ExecutionContext = jobExecutionContext.CreateChild(Guid.NewGuid(), $"{DisplayName}::{StringUtil.Loc("PostGroup", taskStep.Task.DisplayName)}", taskStep.Task.Name, intraStepVariables[taskStep.Task.Id]);
+                    }
+                    else
+                    {
+                        taskStep.ExecutionContext = jobExecutionContext.CreateChild(taskStep.Task.Id, $"{DisplayName}::{taskStep.Task.DisplayName}", taskStep.Task.Name, intraStepVariables[taskStep.Task.Id]);
+                    }
+                }
+                else if (step is JobExtensionRunner)
+                {
+                    JobExtensionRunner extensionRunner = step as JobExtensionRunner;
+                    extensionRunner.ExecutionContext = jobExecutionContext.CreateChild(Guid.NewGuid(), $"{DisplayName}::{extensionRunner.DisplayName}", extensionRunner.DisplayName);
+                }
+            }
+        }
+
+        public async Task RunAsync()
+        {
+            // Validate args.
+            Trace.Entering();
+            ArgUtil.NotNull(ExecutionContext, nameof(ExecutionContext));
+            ArgUtil.NotNull(Group, nameof(Group));
+            ArgUtil.NotNull(Steps, nameof(Steps));
 
             // TaskResult:
             //  Abandoned (Server set this.)
@@ -44,8 +86,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             //  Succeeded
             //  SucceededWithIssues
             CancellationTokenRegistration? jobCancelRegister = null;
-            jobContext.Variables.Agent_JobStatus = jobContext.Result ?? TaskResult.Succeeded;
-            foreach (IStep step in steps)
+            foreach (IStep step in Steps)
             {
                 Trace.Info($"Processing step: DisplayName='{step.DisplayName}', ContinueOnError={step.ContinueOnError}, Enabled={step.Enabled}");
                 ArgUtil.Equal(true, step.Enabled, nameof(step.Enabled));
@@ -64,14 +105,13 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                 try
                 {
                     // Register job cancellation call back only if job cancellation token not been fire before each step run
-                    if (!jobContext.CancellationToken.IsCancellationRequested)
+                    if (!ExecutionContext.CancellationToken.IsCancellationRequested)
                     {
                         // Test the condition again. The job was canceled after the condition was originally evaluated.
-                        jobCancelRegister = jobContext.CancellationToken.Register(() =>
+                        jobCancelRegister = ExecutionContext.CancellationToken.Register(() =>
                         {
-                            // mark job as cancelled
-                            jobContext.Result = TaskResult.Canceled;
-                            jobContext.Variables.Agent_JobStatus = jobContext.Result;
+                            // mark group as cancelled
+                            ExecutionContext.Result = TaskResult.Canceled;
 
                             step.ExecutionContext.Debug($"Re-evaluate condition on job cancellation for step: '{step.DisplayName}'.");
                             bool conditionReTestResult;
@@ -105,11 +145,10 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                     }
                     else
                     {
-                        if (jobContext.Result != TaskResult.Canceled)
+                        if (ExecutionContext.Result != TaskResult.Canceled)
                         {
-                            // mark job as cancelled
-                            jobContext.Result = TaskResult.Canceled;
-                            jobContext.Variables.Agent_JobStatus = jobContext.Result;
+                            // mark group as cancelled
+                            ExecutionContext.Result = TaskResult.Canceled;
                         }
                     }
 
@@ -155,7 +194,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                     else
                     {
                         // Run the step.
-                        await RunStepAsync(step, jobContext.CancellationToken);
+                        await RunStepAsync(step, ExecutionContext.CancellationToken);
                     }
                 }
                 finally
@@ -171,16 +210,26 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                 if (step.ExecutionContext.Result == TaskResult.SucceededWithIssues ||
                     step.ExecutionContext.Result == TaskResult.Failed)
                 {
-                    Trace.Info($"Update job result with current step result '{step.ExecutionContext.Result}'.");
-                    jobContext.Result = TaskResultUtil.MergeTaskResults(jobContext.Result, step.ExecutionContext.Result.Value);
-                    jobContext.Variables.Agent_JobStatus = jobContext.Result;
+                    Trace.Info($"Update group result with current step result '{step.ExecutionContext.Result}'.");
+                    ExecutionContext.Result = TaskResultUtil.MergeTaskResults(ExecutionContext.Result, step.ExecutionContext.Result.Value);
                 }
                 else
                 {
-                    Trace.Info($"No need for updating job result with current step result '{step.ExecutionContext.Result}'.");
+                    Trace.Info($"No need for updating group result with current step result '{step.ExecutionContext.Result}'.");
                 }
 
-                Trace.Info($"Current state: job state = '{jobContext.Result}'");
+                Trace.Info($"Current state: group state = '{ExecutionContext.Result}'");
+            }
+
+            // map group output variables
+            if (Group.Outputs.Count > 0)
+            {
+                foreach (var output in Group.Outputs)
+                {
+                    ExecutionContext.Debug($"Mapping task output '{output.Value}' to group output '{output.Key}'.");
+                    Variable taskOutput = ExecutionContext.Variables.GetRaw(output.Value);
+                    ExecutionContext.SetVariable(output.Key, taskOutput.Value, taskOutput.Secret, true);
+                }
             }
         }
 
@@ -232,7 +281,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                     if (step.ExecutionContext.CancellationToken.IsCancellationRequested &&
                         !jobCancellationToken.IsCancellationRequested)
                     {
-                        // Log the timeout error, set step result to falied if the current result is not canceled.
+                        // Log the timeout error, set step result to failed if the current result is not canceled.
                         Trace.Error($"Caught timeout exception from async command {command.Name}: {ex}");
                         step.ExecutionContext.Error(StringUtil.Loc("StepTimedOut"));
 
@@ -251,7 +300,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                 }
                 catch (Exception ex)
                 {
-                    // Log the error, set step result to falied if the current result is not canceled.
+                    // Log the error, set step result to failed if the current result is not canceled.
                     Trace.Error($"Caught exception from async command {command.Name}: {ex}");
                     step.ExecutionContext.Error(ex);
 

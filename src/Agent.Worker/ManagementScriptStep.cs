@@ -6,6 +6,7 @@ using Microsoft.TeamFoundation.DistributedTask.Orchestration.Server.Expressions;
 using Microsoft.TeamFoundation.DistributedTask.WebApi;
 using Microsoft.VisualStudio.Services.Agent.Util;
 using Microsoft.VisualStudio.Services.Agent.Worker.Handlers;
+using Pipelines = Microsoft.TeamFoundation.DistributedTask.Pipelines;
 
 namespace Microsoft.VisualStudio.Services.Agent.Worker
 {
@@ -28,6 +29,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
         public bool ContinueOnError => false;
         public bool Enabled => true;
         public TimeSpan? Timeout => null;
+        public Pipelines.ContainerReference Container => null;
 
         public string AccessToken { get; set; }
         public IExecutionContext ExecutionContext { get; set; }
@@ -49,10 +51,14 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                 FailOnStandardError = "false"
             };
 
+            // Create the handler invoker
+            var handlerInvoker = HostContext.CreateService<IDefaultHandlerInvoker>();
+
             // Create the handler.
             var handlerFactory = HostContext.GetService<IHandlerFactory>();
             var handler = (PowerShellExeHandler)handlerFactory.Create(
                 ExecutionContext,
+                handlerInvoker,
                 ExecutionContext.Endpoints,
                 new List<SecureFile>(0),
                 handlerData,
@@ -66,6 +72,11 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
 
             // Run the task.
             await handler.RunAsync();
+        }
+
+        public void InitializeStep(IExecutionContext jobExecutionContext, Dictionary<Guid, Variables> intraStepVariables = null)
+        {
+            ExecutionContext = jobExecutionContext.CreateChild(Guid.NewGuid(), DisplayName, nameof(ManagementScriptStep));
         }
     }
 }

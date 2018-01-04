@@ -38,7 +38,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             }
         }
 
-        public Variables(IHostContext hostContext, IDictionary<string, string> copy, IList<MaskHint> maskHints, out List<string> warnings)
+        public Variables(IHostContext hostContext, IDictionary<string, VariableValue> copy, out List<string> warnings)
         {
             // Store/Validate args.
             _hostContext = hostContext;
@@ -46,33 +46,23 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             _trace = _hostContext.GetTrace(nameof(Variables));
             ArgUtil.NotNull(hostContext, nameof(hostContext));
 
-            // Validate the dictionary, rmeove any variable with empty variable name.
+            // Validate the dictionary, remove any variable with empty variable name.
             ArgUtil.NotNull(copy, nameof(copy));
             if (copy.Keys.Any(k => string.IsNullOrWhiteSpace(k)))
             {
                 _trace.Info($"Remove {copy.Keys.Count(k => string.IsNullOrWhiteSpace(k))} variables with empty variable name.");
             }
 
-            // Filter/validate the mask hints.
-            ArgUtil.NotNull(maskHints, nameof(maskHints));
-            MaskHint[] variableMaskHints = maskHints.Where(x => x.Type == MaskType.Variable).ToArray();
-            foreach (MaskHint maskHint in variableMaskHints)
-            {
-                string maskHintValue = maskHint.Value;
-                ArgUtil.NotNullOrEmpty(maskHintValue, nameof(maskHintValue));
-            }
-
             // Initialize the variable dictionary.
-            IEnumerable<Variable> variables =
-                from string name in copy.Keys
-                where !string.IsNullOrWhiteSpace(name)
-                join MaskHint maskHint in variableMaskHints // Join the variable names with the variable mask hints.
-                on name.ToUpperInvariant() equals maskHint.Value.ToUpperInvariant()
-                into maskHintGrouping
-                select new Variable(
-                    name: name,
-                    value: copy[name] ?? string.Empty,
-                    secret: maskHintGrouping.Any());
+            List<Variable> variables = new List<Variable>();
+            foreach(var variable in copy)
+            {
+                if(!string.IsNullOrWhiteSpace(variable.Key))
+                {
+                    variables.Add(new Variable(variable.Key, variable.Value.Value, variable.Value.IsSecret));
+                }
+            }
+            
             foreach (Variable variable in variables)
             {
                 // Store the variable. The initial secret values have already been
@@ -185,6 +175,19 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             }
 
             VarUtil.ExpandValues(_hostContext, source, target);
+        }
+
+        public Variable GetRaw(string name)
+        {
+            Variable variable;
+            if (_expanded.TryGetValue(name, out variable))
+            {
+                _trace.Verbose($"Get '{name}': '{variable.Value}'");
+                return variable;
+            }
+
+            _trace.Verbose($"Get '{name}' (not found)");
+            return null;
         }
 
         public string Get(string name)

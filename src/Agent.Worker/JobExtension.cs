@@ -3,15 +3,17 @@ using System.Collections.Generic;
 using System.Threading.Tasks;
 using Microsoft.TeamFoundation.DistributedTask.Orchestration.Server.Expressions;
 using Microsoft.TeamFoundation.DistributedTask.WebApi;
+using Pipelines = Microsoft.TeamFoundation.DistributedTask.Pipelines;
 using Microsoft.VisualStudio.Services.Agent.Util;
 using Microsoft.VisualStudio.Services.Agent.Worker.Container;
+using System.Linq;
 
 namespace Microsoft.VisualStudio.Services.Agent.Worker
 {
     public interface IJobExtension : IExtension
     {
         HostTypes HostType { get; }
-        Task<JobInitializeResult> InitializeJob(IExecutionContext jobContext, AgentJobRequestMessage message);
+        Task<List<IStep>> InitializeJob(IExecutionContext jobContext, Pipelines.AgentJobRequestMessage message);
         string GetRootedPath(IExecutionContext context, string path);
         void ConvertLocalPath(IExecutionContext context, string localPath, out string repoName, out string sourcePath);
     }
@@ -29,18 +31,22 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
 
     public abstract class JobExtension : AgentService, IJobExtension
     {
+        private Dictionary<Guid, Variables> _intraTaskVariablesMapping = new Dictionary<Guid, Variables>();
+
         public abstract HostTypes HostType { get; }
 
         public abstract Type ExtensionType { get; }
 
-        // Anything job extension want to do before building the steps list.
+        // Anything job extension want to do before building the steps list. This will be deprecated when GetSource move to a task.
         public abstract void InitializeJobExtension(IExecutionContext context);
 
-        // Anything job extension want to add to pre-job steps list.
-        public abstract IStep GetExtensionPreJobStep(IExecutionContext jobContext);
+        // Anything job extension want to add to pre-job steps list. This will be deprecated when GetSource move to a task.
+        public abstract IStep GetExtensionPreJobStep(IExecutionContext context);
 
-        // Anything job extension want to add to post-job steps list.
-        public abstract IStep GetExtensionPostJobStep(IExecutionContext jobContext);
+        // Anything job extension want to add to post-job steps list. This will be deprecated when GetSource move to a task.
+        public abstract IStep GetExtensionPostJobStep(IExecutionContext context);
+
+        // public abstract IStep GetExtensionStep(Guid stepId, Dictionary<string, string> data);
 
         public abstract string GetRootedPath(IExecutionContext context, string path);
 
@@ -48,8 +54,8 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
 
         // download all required tasks.
         // make sure all task's condition inputs are valid.
-        // build up three list of steps for jobrunner. (pre-job, job, post-job)
-        public async Task<JobInitializeResult> InitializeJob(IExecutionContext jobContext, AgentJobRequestMessage message)
+        // build up a list of steps for jobrunner.
+        public async Task<List<IStep>> InitializeJob(IExecutionContext jobContext, Pipelines.AgentJobRequestMessage message)
         {
             Trace.Entering();
             ArgUtil.NotNull(jobContext, nameof(jobContext));
@@ -58,7 +64,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             // create a new timeline record node for 'Initialize job'
             IExecutionContext context = jobContext.CreateChild(Guid.NewGuid(), StringUtil.Loc("InitializeJob"), nameof(JobExtension));
 
-            JobInitializeResult initResult = new JobInitializeResult();
+            List<IStep> jobSteps = new List<IStep>();
             using (var register = jobContext.CancellationToken.Register(() => { context.CancelToken(); }))
             {
                 try
@@ -66,189 +72,28 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                     context.Start();
                     context.Section(StringUtil.Loc("StepStarting", StringUtil.Loc("InitializeJob")));
 
-                    // Give job extension a chance to initalize
+                    // Give job extension a chance to initialize
                     Trace.Info($"Run initial step from extension {this.GetType().Name}.");
                     InitializeJobExtension(context);
 
                     // Download tasks if not already in the cache
                     Trace.Info("Downloading task definitions.");
                     var taskManager = HostContext.GetService<ITaskManager>();
-                    await taskManager.DownloadAsync(context, message.Tasks);
+                    await taskManager.DownloadAsync(context, message.Steps);
 
-                    // Parse all Task conditions.
-                    Trace.Info("Parsing all task's condition inputs.");
-                    var expression = HostContext.GetService<IExpressionManager>();
-                    Dictionary<Guid, INode> taskConditionMap = new Dictionary<Guid, INode>();
-                    foreach (var task in message.Tasks)
+                    // In order to create a flat list of timeline record for each step,
+                    // we need expand all GroupStep/WrapperTask/ContainerStep first,
+                    // then assign ExecutionContext for them.
+                    jobSteps = BuildJobSteps(context, message.Steps);
+
+                    // create task execution context for all job steps
+                    foreach (var step in jobSteps)
                     {
-                        INode condition;
-                        if (!string.IsNullOrEmpty(task.Condition))
-                        {
-                            context.Debug($"Task '{task.DisplayName}' has following condition: '{task.Condition}'.");
-                            condition = expression.Parse(context, task.Condition);
-                        }
-                        else if (task.AlwaysRun)
-                        {
-                            condition = ExpressionManager.SucceededOrFailed;
-                        }
-                        else
-                        {
-                            condition = ExpressionManager.Succeeded;
-                        }
-
-                        taskConditionMap[task.InstanceId] = condition;
+                        ArgUtil.NotNull(step, step.DisplayName);
+                        step.InitializeStep(jobContext, _intraTaskVariablesMapping);
                     }
 
-#if OS_WINDOWS
-                    // This is for internal testing and is not publicly supported. This will be removed from the agent at a later time.
-                    var prepareScript = Environment.GetEnvironmentVariable("VSTS_AGENT_INIT_INTERNAL_TEMP_HACK");
-                    if (!string.IsNullOrEmpty(prepareScript))
-                    {
-                        var prepareStep = new ManagementScriptStep(
-                            scriptPath: prepareScript,
-                            condition: ExpressionManager.Succeeded,
-                            displayName: "Agent Initialization");
-
-                        Trace.Verbose($"Adding agent init script step.");
-                        prepareStep.Initialize(HostContext);
-                        prepareStep.ExecutionContext = jobContext.CreateChild(Guid.NewGuid(), prepareStep.DisplayName, nameof(ManagementScriptStep));
-                        prepareStep.AccessToken = message.Environment.SystemConnection.Authorization.Parameters["AccessToken"];
-                        initResult.PreJobSteps.Add(prepareStep);
-                    }
-#endif
-
-                    // build up 3 lists of steps, pre-job, job, post-job
-                    Stack<IStep> postJobStepsBuilder = new Stack<IStep>();
-                    Dictionary<Guid, Variables> taskVariablesMapping = new Dictionary<Guid, Variables>();
-                    foreach (var taskInstance in message.Tasks)
-                    {
-                        var taskDefinition = taskManager.Load(taskInstance);
-
-                        List<string> warnings;
-                        taskVariablesMapping[taskInstance.InstanceId] = new Variables(HostContext, new Dictionary<string, string>(), message.Environment.MaskHints, out warnings);
-
-                        // Add pre-job steps from Tasks
-                        if (taskDefinition.Data?.PreJobExecution != null)
-                        {
-                            Trace.Info($"Adding Pre-Job {taskInstance.DisplayName}.");
-                            var taskRunner = HostContext.CreateService<ITaskRunner>();
-                            taskRunner.TaskInstance = taskInstance;
-                            taskRunner.Stage = JobRunStage.PreJob;
-                            taskRunner.Condition = taskConditionMap[taskInstance.InstanceId];
-                            initResult.PreJobSteps.Add(taskRunner);
-                        }
-
-                        // Add execution steps from Tasks
-                        if (taskDefinition.Data?.Execution != null)
-                        {
-                            Trace.Verbose($"Adding {taskInstance.DisplayName}.");
-                            var taskRunner = HostContext.CreateService<ITaskRunner>();
-                            taskRunner.TaskInstance = taskInstance;
-                            taskRunner.Stage = JobRunStage.Main;
-                            taskRunner.Condition = taskConditionMap[taskInstance.InstanceId];
-                            initResult.JobSteps.Add(taskRunner);
-                        }
-
-                        // Add post-job steps from Tasks
-                        if (taskDefinition.Data?.PostJobExecution != null)
-                        {
-                            Trace.Verbose($"Adding Post-Job {taskInstance.DisplayName}.");
-                            var taskRunner = HostContext.CreateService<ITaskRunner>();
-                            taskRunner.TaskInstance = taskInstance;
-                            taskRunner.Stage = JobRunStage.PostJob;
-                            taskRunner.Condition = taskConditionMap[taskInstance.InstanceId];
-                            postJobStepsBuilder.Push(taskRunner);
-                        }
-                    }
-
-                    // create task execution context for all pre-job steps from task
-                    foreach (var step in initResult.PreJobSteps)
-                    {
-#if OS_WINDOWS
-                        if (step is ManagementScriptStep)
-                        {
-                            continue;
-                        }
-#endif
-                        ITaskRunner taskStep = step as ITaskRunner;
-                        ArgUtil.NotNull(taskStep, step.DisplayName);
-                        taskStep.ExecutionContext = jobContext.CreateChild(Guid.NewGuid(), StringUtil.Loc("PreJob", taskStep.DisplayName), taskStep.TaskInstance.RefName, taskVariablesMapping[taskStep.TaskInstance.InstanceId]);
-                    }
-
-#if !OS_WINDOWS
-                    if (!string.IsNullOrEmpty(jobContext.Container.ContainerImage))
-                    {
-                        var containerProvider = HostContext.GetService<IContainerOperationProvider>();
-                        initResult.PreJobSteps.Insert(0, containerProvider.GetContainerStartStep(jobContext));
-                    }
-#endif
-                    // Add pre-job step from Extension
-                    Trace.Info("Adding pre-job step from extension.");
-                    var extensionPreJobStep = GetExtensionPreJobStep(jobContext);
-                    if (extensionPreJobStep != null)
-                    {
-                        initResult.PreJobSteps.Add(extensionPreJobStep);
-                    }
-
-                    // create task execution context for all job steps from task
-                    foreach (var step in initResult.JobSteps)
-                    {
-                        ITaskRunner taskStep = step as ITaskRunner;
-                        ArgUtil.NotNull(taskStep, step.DisplayName);
-                        taskStep.ExecutionContext = jobContext.CreateChild(taskStep.TaskInstance.InstanceId, taskStep.DisplayName, taskStep.TaskInstance.RefName, taskVariablesMapping[taskStep.TaskInstance.InstanceId]);
-                    }
-
-                    // Add post-job steps from Tasks
-                    Trace.Info("Adding post-job steps from tasks.");
-                    while (postJobStepsBuilder.Count > 0)
-                    {
-                        initResult.PostJobStep.Add(postJobStepsBuilder.Pop());
-                    }
-
-                    // create task execution context for all post-job steps from task
-                    foreach (var step in initResult.PostJobStep)
-                    {
-                        ITaskRunner taskStep = step as ITaskRunner;
-                        ArgUtil.NotNull(taskStep, step.DisplayName);
-                        taskStep.ExecutionContext = jobContext.CreateChild(Guid.NewGuid(), StringUtil.Loc("PostJob", taskStep.DisplayName), taskStep.TaskInstance.RefName, taskVariablesMapping[taskStep.TaskInstance.InstanceId]);
-                    }
-
-                    // Add post-job step from Extension
-                    Trace.Info("Adding post-job step from extension.");
-                    var extensionPostJobStep = GetExtensionPostJobStep(jobContext);
-                    if (extensionPostJobStep != null)
-                    {
-                        initResult.PostJobStep.Add(extensionPostJobStep);
-                    }
-
-#if !OS_WINDOWS
-                    if (!string.IsNullOrEmpty(jobContext.Container.ContainerImage))
-                    {
-                        var containerProvider = HostContext.GetService<IContainerOperationProvider>();
-                        initResult.PostJobStep.Add(containerProvider.GetContainerStopStep(jobContext));
-                    }
-#endif
-
-#if OS_WINDOWS
-                    // Add script post steps.
-                    // This is for internal testing and is not publicly supported. This will be removed from the agent at a later time.
-                    var finallyScript = Environment.GetEnvironmentVariable("VSTS_AGENT_CLEANUP_INTERNAL_TEMP_HACK");
-                    if (!string.IsNullOrEmpty(finallyScript))
-                    {
-                        var finallyStep = new ManagementScriptStep(
-                            scriptPath: finallyScript,
-                            condition: ExpressionManager.Always,
-                            displayName: "Agent Cleanup");
-
-                        Trace.Verbose($"Adding agent cleanup script step.");
-                        finallyStep.Initialize(HostContext);
-                        finallyStep.ExecutionContext = jobContext.CreateChild(Guid.NewGuid(), finallyStep.DisplayName, nameof(ManagementScriptStep));
-                        finallyStep.AccessToken = message.Environment.SystemConnection.Authorization.Parameters["AccessToken"];
-                        initResult.PostJobStep.Add(finallyStep);
-                    }
-#endif
-
-                    return initResult;
+                    return jobSteps;
                 }
                 catch (OperationCanceledException ex) when (jobContext.CancellationToken.IsCancellationRequested)
                 {
@@ -272,6 +117,280 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                     context.Complete();
                 }
             }
+        }
+
+        private List<IStep> BuildJobSteps(IExecutionContext context, IList<Pipelines.JobStep> steps)
+        {
+            StepsBuilder jobStepsBuilder = new StepsBuilder();
+
+            // Parse all steps' condition, throw exception if condition contains invalid syntax.
+            Trace.Info("Parsing all steps' condition inputs.");
+            var expression = HostContext.GetService<IExpressionManager>();
+            Dictionary<Guid, INode> stepConditionMap = new Dictionary<Guid, INode>();
+            foreach (var step in steps)
+            {
+                INode condition;
+                if (!string.IsNullOrEmpty(step.Condition))
+                {
+                    context.Debug($"{step.Type.ToString()} step '{step.DisplayName}' has following condition: '{step.Condition}'.");
+                    condition = expression.Parse(context, step.Condition);
+                }
+                else
+                {
+                    condition = ExpressionManager.Succeeded;
+                }
+
+                stepConditionMap[step.Id] = condition;
+
+                // expand tasks' condition within a GroupStep.
+                if (step.Type == Pipelines.StepType.Group)
+                {
+                    foreach (var task in (step as Pipelines.GroupStep).Steps)
+                    {
+                        if (!string.IsNullOrEmpty(task.Condition))
+                        {
+                            context.Debug($"Group '{step.DisplayName}': step '{task.DisplayName}' has following condition: '{task.Condition}'.");
+                            condition = expression.Parse(context, task.Condition);
+                        }
+                        else
+                        {
+                            condition = ExpressionManager.Succeeded;
+                        }
+
+                        stepConditionMap[task.Id] = condition;
+                    }
+                }
+            }
+
+#if OS_WINDOWS
+            // This is for internal testing and is not publicly supported. This will be removed from the agent at a later time.
+            var prepareScript = Environment.GetEnvironmentVariable("VSTS_AGENT_INIT_INTERNAL_TEMP_HACK");
+            if (!string.IsNullOrEmpty(prepareScript))
+            {
+                var prepareStep = new ManagementScriptStep(
+                    scriptPath: prepareScript,
+                    condition: ExpressionManager.Succeeded,
+                    displayName: "Agent Initialization");
+
+                Trace.Verbose($"Adding agent init script step.");
+                prepareStep.Initialize(HostContext);
+                ServiceEndpoint systemConnection = context.Endpoints.Single(x => string.Equals(x.Name, ServiceEndpoints.SystemVssConnection, StringComparison.OrdinalIgnoreCase));
+                prepareStep.AccessToken = systemConnection.Authorization.Parameters["AccessToken"];
+                jobStepsBuilder.AddPreStep(prepareStep);
+            }
+
+            // Add script post steps.
+            // This is for internal testing and is not publicly supported. This will be removed from the agent at a later time.
+            var finallyScript = Environment.GetEnvironmentVariable("VSTS_AGENT_CLEANUP_INTERNAL_TEMP_HACK");
+            if (!string.IsNullOrEmpty(finallyScript))
+            {
+                var finallyStep = new ManagementScriptStep(
+                    scriptPath: finallyScript,
+                    condition: ExpressionManager.Always,
+                    displayName: "Agent Cleanup");
+
+                Trace.Verbose($"Adding agent cleanup script step.");
+                finallyStep.Initialize(HostContext);
+                ServiceEndpoint systemConnection = context.Endpoints.Single(x => string.Equals(x.Name, ServiceEndpoints.SystemVssConnection, StringComparison.OrdinalIgnoreCase));
+                finallyStep.AccessToken = systemConnection.Authorization.Parameters["AccessToken"];
+                jobStepsBuilder.AddPostStep(finallyStep);
+            }
+#endif
+
+            // Build up a basic list of steps for the job, expand group step, expand warpper task
+            var taskManager = HostContext.GetService<ITaskManager>();
+            foreach (var step in steps)
+            {
+                if (step.Type == Pipelines.StepType.Task)
+                {
+                    var task = step as Pipelines.TaskStep;
+                    var taskLoadResult = taskManager.Load(context, task);
+                    List<string> warnings;
+                    _intraTaskVariablesMapping[step.Id] = new Variables(HostContext, new Dictionary<string, VariableValue>(), out warnings);
+
+                    // Add pre-job steps from Tasks
+                    if (taskLoadResult.PreScopeStep != null)
+                    {
+                        Trace.Info($"Adding Pre-Job task step {step.DisplayName}.");
+                        jobStepsBuilder.AddPreStep(taskLoadResult.PreScopeStep);
+                    }
+
+                    // Add execution steps from Tasks
+                    if (taskLoadResult.MainScopeStep != null)
+                    {
+                        Trace.Verbose($"Adding task step {step.DisplayName}.");
+                        jobStepsBuilder.AddMainStep(taskLoadResult.MainScopeStep);
+                    }
+
+                    // Add post-job steps from Tasks
+                    if (taskLoadResult.PostScopeStep != null)
+                    {
+                        Trace.Verbose($"Adding Post-Job task step {step.DisplayName}.");
+                        jobStepsBuilder.AddPostStep(taskLoadResult.PostScopeStep);
+                    }
+                }
+                else if (step.Type == Pipelines.StepType.Group)
+                {
+                    var group = step as Pipelines.GroupStep;
+                    Trace.Verbose($"Adding group step {step.DisplayName}.");
+                    var groupRunner = HostContext.CreateService<IGroupRunner>();
+                    groupRunner.Group = group;
+                    groupRunner.Condition = stepConditionMap[step.Id];
+
+                    StepsBuilder groupStepsBuilder = new StepsBuilder();
+                    foreach (var groupStepTask in group.Steps)
+                    {
+                        var taskLoadResult = taskManager.Load(context, groupStepTask);
+                        List<string> warnings;
+                        _intraTaskVariablesMapping[groupStepTask.Id] = new Variables(HostContext, new Dictionary<string, VariableValue>(), out warnings);
+
+                        // Add pre-group steps from Tasks
+                        if (taskLoadResult.PreScopeStep != null)
+                        {
+                            Trace.Info($"Adding Pre-Group task step {groupStepTask.DisplayName}.");
+                            var taskRunner = HostContext.CreateService<ITaskRunner>();
+                            groupStepsBuilder.AddPreStep(taskLoadResult.PreScopeStep);
+                        }
+
+                        // Add group execution steps from Tasks
+                        if (taskLoadResult.MainScopeStep != null)
+                        {
+                            Trace.Verbose($"Adding group task step {groupStepTask.DisplayName}.");
+                            groupStepsBuilder.AddMainStep(taskLoadResult.MainScopeStep);
+                        }
+
+                        // Add post-group steps from Tasks
+                        if (taskLoadResult.PostScopeStep != null)
+                        {
+                            Trace.Verbose($"Adding Post-Group task step {step.DisplayName}.");
+                            groupStepsBuilder.AddPostStep(taskLoadResult.PostScopeStep);
+                        }
+                    }
+
+                    groupRunner.Steps.AddRange(groupStepsBuilder.Result);
+                    jobStepsBuilder.AddMainStep(groupRunner);
+                }
+            }
+
+            // Add pre-job step from Extension
+            Trace.Info("Adding pre-job step from extension.");
+            var extensionPreJobStep = GetExtensionPreJobStep(context);
+            if (extensionPreJobStep != null)
+            {
+                jobStepsBuilder.AddPreStep(extensionPreJobStep);
+            }
+
+            // Add post-job step from Extension
+            Trace.Info("Adding post-job step from extension.");
+            var extensionPostJobStep = GetExtensionPostJobStep(context);
+            if (extensionPostJobStep != null)
+            {
+                jobStepsBuilder.AddPostStep(extensionPostJobStep);
+            }
+
+            // Inject container create/start steps to the jobSteps list.
+            // tracking how many different containers will be used and how many times each container will be used in multiple steps.      
+            // we will create required container just in time and also shutdown container as soon as the last step that need the container is finished.                      
+            Dictionary<string, int> containerUsage = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            var containerProvider = HostContext.GetService<IContainerOperationProvider>();
+            List<IStep> jobStepsWithContainerCreated = new List<IStep>();
+            foreach (var step in jobStepsBuilder.Result)
+            {
+                if (!string.IsNullOrEmpty(step.Container?.Name))
+                {
+                    if (!containerUsage.ContainsKey(step.Container.Name))
+                    {
+                        containerUsage[step.Container.Name] = 1;
+                        if (step is ITaskRunner)
+                        {
+                            jobStepsWithContainerCreated.Add(containerProvider.GetContainerStartStep(context, step.Container));
+                        }
+                        else if (step is IGroupRunner)
+                        {
+                            var groupRunner = step as IGroupRunner;
+                            groupRunner.Steps.Insert(0, containerProvider.GetContainerStartStep(context, step.Container));
+                        }
+                    }
+                    else
+                    {
+                        containerUsage[step.Container.Name]++;
+                    }
+                }
+
+                jobStepsWithContainerCreated.Add(step);
+            }
+
+            // Tracing
+            foreach (var container in containerUsage)
+            {
+                Trace.Verbose($"Container: '{container.Key}' --- {container.Value} times");
+            }
+
+            // Inject container stop steps to the jobSteps list.
+            List<IStep> jobStepsWithContainerShutdown = new List<IStep>();
+            foreach (var step in jobStepsWithContainerCreated)
+            {
+                if (!string.IsNullOrEmpty(step.Container?.Name))
+                {
+                    containerUsage[step.Container.Name]--;
+                    if (containerUsage[step.Container.Name] == 0)
+                    {
+                        // Last one
+                        if (step is ITaskRunner)
+                        {
+                            jobStepsWithContainerShutdown.Add(step);
+                            jobStepsWithContainerShutdown.Add(containerProvider.GetContainerStopStep(context, step.Container));
+                        }
+                        else if (step is IGroupRunner)
+                        {
+                            var groupRunner = step as IGroupRunner;
+                            groupRunner.Steps.Add(containerProvider.GetContainerStopStep(context, step.Container));
+                            jobStepsWithContainerShutdown.Add(groupRunner);
+                        }
+                    }
+                    else
+                    {
+                        jobStepsWithContainerShutdown.Add(step);
+                    }
+                }
+                else
+                {
+                    jobStepsWithContainerShutdown.Add(step);
+                }
+            }
+
+            return jobStepsWithContainerShutdown;
+        }
+    }
+
+    public class StepsBuilder
+    {
+        private readonly List<IStep> _steps = new List<IStep>();
+
+        Int32 _preInjectIndex = 0;
+        Int32 _mainInjectIndex = 0;
+        Int32 _postInjectIndex = 0;
+
+        public List<IStep> Result => _steps;
+
+        public void AddPreStep(IStep step)
+        {
+            _steps.Insert(_preInjectIndex, step);
+            _preInjectIndex++;
+            _mainInjectIndex++;
+            _postInjectIndex++;
+        }
+
+        public void AddMainStep(IStep step)
+        {
+            _steps.Insert(_mainInjectIndex, step);
+            _mainInjectIndex++;
+            _postInjectIndex++;
+        }
+
+        public void AddPostStep(IStep step)
+        {
+            _steps.Insert(_postInjectIndex, step);
         }
     }
 }

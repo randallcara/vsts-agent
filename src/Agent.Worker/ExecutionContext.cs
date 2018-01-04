@@ -1,4 +1,5 @@
 using Microsoft.TeamFoundation.DistributedTask.WebApi;
+using Pipelines = Microsoft.TeamFoundation.DistributedTask.Pipelines;
 using Microsoft.VisualStudio.Services.Agent.Util;
 using System;
 using System.Collections.Generic;
@@ -30,10 +31,12 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
         HashSet<string> OutputVariables { get; }
         List<IAsyncCommandContext> AsyncCommands { get; }
         List<string> PrependPath { get; }
-        ContainerInfo Container { get; }
+
+        Dictionary<string, ContainerInfo> Containers { get; }
+        //ContainerInfo Container { get; }
 
         // Initialize
-        void InitializeJob(JobRequestMessage message, CancellationToken token);
+        void InitializeJob(Pipelines.AgentJobRequestMessage message, CancellationToken token);
         void CancelToken();
         IExecutionContext CreateChild(Guid recordId, string displayName, string refName, Variables taskVariables = null);
 
@@ -61,6 +64,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
         private readonly object _loggerLock = new object();
         private readonly List<IAsyncCommandContext> _asyncCommands = new List<IAsyncCommandContext>();
         private readonly HashSet<string> _outputvariables = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, ContainerInfo> _containers = new Dictionary<string, ContainerInfo>(StringComparer.OrdinalIgnoreCase);
 
         private IPagingLogger _logger;
         private ISecretMasker _secretMasker;
@@ -84,7 +88,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
         public HashSet<string> OutputVariables => _outputvariables;
         public bool WriteDebug { get; private set; }
         public List<string> PrependPath { get; private set; }
-        public ContainerInfo Container { get; private set; }
+        public Dictionary<string, ContainerInfo> Containers => _containers;
 
         public List<IAsyncCommandContext> AsyncCommands => _asyncCommands;
 
@@ -148,7 +152,11 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             child.WriteDebug = WriteDebug;
             child._parentExecutionContext = this;
             child.PrependPath = PrependPath;
-            child.Container = Container;
+
+            foreach (var container in Containers)
+            {
+                child.Containers[container.Key] = container.Value;
+            }
 
             child.InitializeTimelineRecord(_mainTimelineId, recordId, _record.Id, ExecutionContextType.Task, displayName, refName, ++_childTimelineRecordOrder);
 
@@ -320,15 +328,13 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             }
         }
 
-        public void InitializeJob(JobRequestMessage message, CancellationToken token)
+        public void InitializeJob(Pipelines.AgentJobRequestMessage message, CancellationToken token)
         {
             // Validation
             Trace.Entering();
             ArgUtil.NotNull(message, nameof(message));
-            ArgUtil.NotNull(message.Environment, nameof(message.Environment));
-            ArgUtil.NotNull(message.Environment.SystemConnection, nameof(message.Environment.SystemConnection));
-            ArgUtil.NotNull(message.Environment.Endpoints, nameof(message.Environment.Endpoints));
-            ArgUtil.NotNull(message.Environment.Variables, nameof(message.Environment.Variables));
+            ArgUtil.NotNull(message.Endpoints, nameof(message.Endpoints));
+            ArgUtil.NotNull(message.Variables, nameof(message.Variables));
             ArgUtil.NotNull(message.Plan, nameof(message.Plan));
 
             _cancellationTokenSource = CancellationTokenSource.CreateLinkedTokenSource(token);
@@ -337,31 +343,30 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             Features = ApiUtil.GetFeatures(message.Plan);
 
             // Endpoints
-            Endpoints = message.Environment.Endpoints;
-            Endpoints.Add(message.Environment.SystemConnection);
+            Endpoints = message.Endpoints;
 
             // SecureFiles
-            SecureFiles = message.Environment.SecureFiles;
+            SecureFiles = message.SecureFiles;
 
             // Variables (constructor performs initial recursive expansion)
             List<string> warnings;
-            Variables = new Variables(HostContext, message.Environment.Variables, message.Environment.MaskHints, out warnings);
+            Variables = new Variables(HostContext, message.Variables, out warnings);
 
             // Prepend Path
             PrependPath = new List<string>();
 
             // Docker 
-            string imageName = Variables.Get("_PREVIEW_VSTS_DOCKER_IMAGE");
-            if (string.IsNullOrEmpty(imageName))
-            {
-                imageName = Environment.GetEnvironmentVariable("_PREVIEW_VSTS_DOCKER_IMAGE");
-            }
+            // string imageName = Variables.Get("_PREVIEW_VSTS_DOCKER_IMAGE");
+            // if (string.IsNullOrEmpty(imageName))
+            // {
+            //     imageName = Environment.GetEnvironmentVariable("_PREVIEW_VSTS_DOCKER_IMAGE");
+            // }
 
-            Container = new ContainerInfo()
-            {
-                ContainerImage = imageName,
-                ContainerName = $"VSTS_{Variables.System_HostType.ToString()}_{message.JobId.ToString("D")}",
-            };
+            // Container = new ContainerInfo()
+            // {
+            //     ContainerImage = imageName,
+            //     ContainerName = $"VSTS_{Variables.System_HostType.ToString()}_{message.JobId.ToString("D")}",
+            // };
 
             // Proxy variables
             var agentWebProxy = HostContext.GetService<IVstsAgentWebProxy>();
@@ -420,8 +425,8 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                 timelineRecordId: message.JobId,
                 parentTimelineRecordId: null,
                 recordType: ExecutionContextType.Job,
-                displayName: message.JobName,
-                refName: message.JobRefName,
+                displayName: message.JobDisplayName,
+                refName: message.JobName,
                 order: null); // The job timeline record's order is set by server.
 
             // Logger (must be initialized before writing warnings).
