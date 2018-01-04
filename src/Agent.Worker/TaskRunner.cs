@@ -266,6 +266,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             if (Container != null)
             {
                 // Make sure required container is already created.
+                ArgUtil.NotNull(ExecutionContext.Containers, nameof(ExecutionContext.Containers));
                 ExecutionContext.Containers.TryGetValue(Container.Name, out ContainerInfo container);
                 ArgUtil.NotNull(container, nameof(container));
                 ArgUtil.NotNullOrEmpty(container.ContainerId, nameof(container.ContainerId));

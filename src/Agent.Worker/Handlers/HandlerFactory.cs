@@ -38,7 +38,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Handlers
     }
 
 
-    public sealed class ProcessHandlerInvoker : AgentService, IHandlerInvoker
+    public sealed class ProcessHandlerInvoker : AgentService, IDefaultHandlerInvoker
     {
         public event EventHandler<ProcessDataReceivedEventArgs> OutputDataReceived;
         public event EventHandler<ProcessDataReceivedEventArgs> ErrorDataReceived;
@@ -72,7 +72,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Handlers
         }
     }
 
-    public sealed class ContainerHandlerInvoker : AgentService, IHandlerInvoker
+    public sealed class ContainerHandlerInvoker : AgentService, IContainerHandlerInvoker
     {
         public ContainerInfo Container { get; set; }
         public event EventHandler<ProcessDataReceivedEventArgs> OutputDataReceived;

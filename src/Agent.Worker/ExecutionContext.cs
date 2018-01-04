@@ -64,7 +64,6 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
         private readonly object _loggerLock = new object();
         private readonly List<IAsyncCommandContext> _asyncCommands = new List<IAsyncCommandContext>();
         private readonly HashSet<string> _outputvariables = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        private readonly Dictionary<string, ContainerInfo> _containers = new Dictionary<string, ContainerInfo>(StringComparer.OrdinalIgnoreCase);
 
         private IPagingLogger _logger;
         private ISecretMasker _secretMasker;
@@ -88,7 +87,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
         public HashSet<string> OutputVariables => _outputvariables;
         public bool WriteDebug { get; private set; }
         public List<string> PrependPath { get; private set; }
-        public Dictionary<string, ContainerInfo> Containers => _containers;
+        public Dictionary<string, ContainerInfo> Containers { get; private set; }
 
         public List<IAsyncCommandContext> AsyncCommands => _asyncCommands;
 
@@ -152,11 +151,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             child.WriteDebug = WriteDebug;
             child._parentExecutionContext = this;
             child.PrependPath = PrependPath;
-
-            foreach (var container in Containers)
-            {
-                child.Containers[container.Key] = container.Value;
-            }
+            child.Containers = Containers;
 
             child.InitializeTimelineRecord(_mainTimelineId, recordId, _record.Id, ExecutionContextType.Task, displayName, refName, ++_childTimelineRecordOrder);
 
@@ -356,6 +351,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             PrependPath = new List<string>();
 
             // Docker 
+            Containers = new Dictionary<string, ContainerInfo>(StringComparer.OrdinalIgnoreCase);
             // string imageName = Variables.Get("_PREVIEW_VSTS_DOCKER_IMAGE");
             // if (string.IsNullOrEmpty(imageName))
             // {

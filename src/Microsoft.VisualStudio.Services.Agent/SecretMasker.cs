@@ -103,29 +103,29 @@ namespace Microsoft.VisualStudio.Services.Agent
 
         public void AddRegex(string expression)
         {
-            _regexSecrets.TryAdd(expression, new RegexSecret(expression));
+            // _regexSecrets.TryAdd(expression, new RegexSecret(expression));
         }
 
         public void AddValue(string value)
         {
-            if (!string.IsNullOrEmpty(value))
-            {
-                _valueSecrets.TryAdd(value, new ValueSecret(value));
+            // if (!string.IsNullOrEmpty(value))
+            // {
+            //     _valueSecrets.TryAdd(value, new ValueSecret(value));
 
-                // Add URI escaped value as an extra precaution
-                string uriEscaped = Uri.EscapeDataString(value);
-                if (!uriEscaped.Equals(value, StringComparison.OrdinalIgnoreCase))
-                {
-                    _valueSecrets.TryAdd($"{value}_uriescaped", new ValueSecret(uriEscaped));
-                }
+            //     // Add URI escaped value as an extra precaution
+            //     string uriEscaped = Uri.EscapeDataString(value);
+            //     if (!uriEscaped.Equals(value, StringComparison.OrdinalIgnoreCase))
+            //     {
+            //         _valueSecrets.TryAdd($"{value}_uriescaped", new ValueSecret(uriEscaped));
+            //     }
 
-                // Add json escaped value as an extra precaution
-                string jsonEscaped = JsonConvert.ToString(value).Trim('\"');
-                if (!jsonEscaped.Equals(value, StringComparison.OrdinalIgnoreCase))
-                {
-                    _valueSecrets.TryAdd($"{value}_jsonescaped", new ValueSecret(jsonEscaped));
-                }
-            }
+            //     // Add json escaped value as an extra precaution
+            //     string jsonEscaped = JsonConvert.ToString(value).Trim('\"');
+            //     if (!jsonEscaped.Equals(value, StringComparison.OrdinalIgnoreCase))
+            //     {
+            //         _valueSecrets.TryAdd($"{value}_jsonescaped", new ValueSecret(jsonEscaped));
+            //     }
+            // }
         }
     }
 

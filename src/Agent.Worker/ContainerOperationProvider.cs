@@ -123,6 +123,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
 
             data.TryGetValue("name", out string containerName);
             data.TryGetValue("image", out string containerImage);
+            data.TryGetValue("localimage", out string localImage);
             data.TryGetValue("registry", out string containerRegistry);
             data.TryGetValue("options", out string containerOptions);
 
@@ -147,7 +148,14 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             string registryServer = string.Empty;
             if (!string.IsNullOrEmpty(containerRegistry))
             {
-                var registryEndpoint = executionContext.Endpoints.FirstOrDefault(x => x.Name == containerRegistry && x.Type == "dockerregistry");
+                Trace.Info(containerRegistry);
+                foreach (var e in executionContext.Endpoints)
+                {
+                    Trace.Info(e.Name);
+                    Trace.Info(e.Type);
+                }
+
+                var registryEndpoint = executionContext.Endpoints.FirstOrDefault(x => x.Id.ToString() == containerRegistry && x.Type == "dockerregistry");
                 ArgUtil.NotNull(registryEndpoint, nameof(registryEndpoint));
 
                 string username = string.Empty;
@@ -168,14 +176,28 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             }
 
             ContainerInfo container = new ContainerInfo();
+
+            // keep tracking container
+            executionContext.Containers[containerName] = container;
+
             container.ContainerName = containerName; // TODO: remove invalid chars.
-            if (!string.IsNullOrEmpty(registryServer))
+            container.ContainerImage = containerImage;
+
+            bool skipDockerPull = StringUtil.ConvertToBoolean(localImage, false);
+            if (!skipDockerPull)
             {
-                container.ContainerImage = $"{registryServer}/{containerImage}";
-            }
-            else
-            {
-                container.ContainerImage = containerImage;
+                string imageName = container.ContainerImage;
+                if (!string.IsNullOrEmpty(registryServer) && registryServer.IndexOf("index.docker.io", StringComparison.OrdinalIgnoreCase) < 0)
+                {
+                    imageName = $"{registryServer}/{imageName}";
+                }
+
+                // Pull down docker image
+                int pullExitCode = await _dockerManger.DockerPull(executionContext, imageName);
+                if (pullExitCode != 0)
+                {
+                    throw new InvalidOperationException($"Docker pull failed with exit code {pullExitCode}");
+                }
             }
 
             // Mount folder into container
@@ -197,6 +219,13 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             {
                 container.ContainerId = await _dockerManger.DockerCreate(executionContext, container, containerOptions);
                 ArgUtil.NotNullOrEmpty(container.ContainerId, nameof(container.ContainerId));
+
+                // Start container
+                int startExitCode = await _dockerManger.DockerStart(executionContext, container.ContainerId);
+                if (startExitCode != 0)
+                {
+                    throw new InvalidOperationException($"Docker start fail with exit code {startExitCode}");
+                }
             }
             finally
             {
@@ -211,15 +240,8 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                 }
             }
 
-            // Start container
-            int startExitCode = await _dockerManger.DockerStart(executionContext, container.ContainerId);
-            if (startExitCode != 0)
-            {
-                throw new InvalidOperationException($"Docker start fail with exit code {startExitCode}");
-            }
-
             // Ensure bash exist in the image
-            int execWhichBashExitCode = await _dockerManger.DockerExec(executionContext, container.ContainerId, string.Empty, $"command -v bash");
+            int execWhichBashExitCode = await _dockerManger.DockerExec(executionContext, container.ContainerId, string.Empty, $"which bash");
             if (execWhichBashExitCode != 0)
             {
                 throw new InvalidOperationException($"Docker exec fail with exit code {execWhichBashExitCode}");
@@ -296,9 +318,6 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             {
                 throw new InvalidOperationException($"Docker exec fail with exit code {execEchoExitCode}");
             }
-
-            // keep tracking container
-            executionContext.Containers[containerName] = container;
         }
 
         private async Task StopContainerAsync(IExecutionContext executionContext, Dictionary<string, string> data)
