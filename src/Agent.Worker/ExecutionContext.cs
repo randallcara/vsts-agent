@@ -352,17 +352,6 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
 
             // Docker 
             Containers = new Dictionary<string, ContainerInfo>(StringComparer.OrdinalIgnoreCase);
-            // string imageName = Variables.Get("_PREVIEW_VSTS_DOCKER_IMAGE");
-            // if (string.IsNullOrEmpty(imageName))
-            // {
-            //     imageName = Environment.GetEnvironmentVariable("_PREVIEW_VSTS_DOCKER_IMAGE");
-            // }
-
-            // Container = new ContainerInfo()
-            // {
-            //     ContainerImage = imageName,
-            //     ContainerName = $"VSTS_{Variables.System_HostType.ToString()}_{message.JobId.ToString("D")}",
-            // };
 
             // Proxy variables
             var agentWebProxy = HostContext.GetService<IVstsAgentWebProxy>();

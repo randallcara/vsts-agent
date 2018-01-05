@@ -162,6 +162,25 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                 }
             }
 
+            // Container preview image env
+            string imageName = context.Variables.Get("_PREVIEW_VSTS_DOCKER_IMAGE");
+            if (string.IsNullOrEmpty(imageName))
+            {
+                imageName = Environment.GetEnvironmentVariable("_PREVIEW_VSTS_DOCKER_IMAGE");
+            }
+
+            if (!string.IsNullOrEmpty(imageName) && !steps.Any(x => !string.IsNullOrEmpty(x.Container?.Image)))
+            {
+                foreach (var step in steps)
+                {
+                    step.Container = new Pipelines.ContainerReference()
+                    {
+                        Name = "VSTS_Container",
+                        Image = imageName,
+                    };
+                }
+            }
+
 #if OS_WINDOWS
             // This is for internal testing and is not publicly supported. This will be removed from the agent at a later time.
             var prepareScript = Environment.GetEnvironmentVariable("VSTS_AGENT_INIT_INTERNAL_TEMP_HACK");
