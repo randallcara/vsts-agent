@@ -578,6 +578,9 @@ namespace Microsoft.VisualStudio.Services.Agent.Listener.Configuration
                     // delete agent cert setting
                     (HostContext.GetService<IAgentCertificateManager>() as AgentCertificateManager).DeleteCertificateSetting();
 
+                    // delete agent runtime option
+                    _store.DeleteAgentRuntimeOptions();
+
                     _store.DeleteSettings();
                     _term.WriteLine(StringUtil.Loc("Success") + currentAction);
                 }
