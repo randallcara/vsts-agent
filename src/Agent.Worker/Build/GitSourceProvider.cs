@@ -24,7 +24,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
         {
 #if OS_WINDOWS
             // check git version for SChannel SSLBackend (Windows Only)
-            bool schannelSslBackend = executionContext.Variables.GetBoolean(Constants.Variables.Features.SChannelSslBackend) ?? false;
+            bool schannelSslBackend = HostContext.GetService<IConfigurationStore>().GetAgentRuntimeOptions()?.GitUseSecureChannel ?? false;
             if (schannelSslBackend)
             {
                 _gitCommandManager.EnsureGitVersion(_minGitVersionSupportSSLBackendOverride, throwOnNotMatch: true);
@@ -65,7 +65,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
         {
 #if OS_WINDOWS
             // check git version for SChannel SSLBackend (Windows Only)
-            bool schannelSslBackend = executionContext.Variables.GetBoolean(Constants.Variables.Features.SChannelSslBackend) ?? false;
+            bool schannelSslBackend = HostContext.GetService<IConfigurationStore>().GetAgentRuntimeOptions()?.GitUseSecureChannel ?? false;
             if (schannelSslBackend)
             {
                 _gitCommandManager.EnsureGitVersion(_minGitVersionSupportSSLBackendOverride, throwOnNotMatch: true);
@@ -168,7 +168,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
 
 #if OS_WINDOWS
             // check git version for SChannel SSLBackend (Windows Only)
-            bool schannelSslBackend = executionContext.Variables.GetBoolean(Constants.Variables.Features.SChannelSslBackend) ?? false;
+            bool schannelSslBackend = HostContext.GetService<IConfigurationStore>().GetAgentRuntimeOptions()?.GitUseSecureChannel ?? false;
             if (schannelSslBackend)
             {
                 _gitCommandManager.EnsureGitVersion(_minGitVersionSupportSSLBackendOverride, throwOnNotMatch: true);
