@@ -299,7 +299,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
             Trace.Info($"acceptUntrustedCerts={acceptUntrustedCerts}");
 
 #if OS_WINDOWS
-            bool schannelSslBackend = executionContext.Variables.GetBoolean(Constants.Variables.Features.SChannelSslBackend) ?? false;
+            bool schannelSslBackend = HostContext.GetService<IConfigurationStore>().GetAgentRuntimeOptions()?.GitUseSecureChannel ?? false;
             Trace.Info($"schannelSslBackend={schannelSslBackend}");
 #endif
 
@@ -656,13 +656,13 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
                         additionalLfsFetchArgs.Add($"-c http.sslcert=\"{agentCert.ClientCertificateFile}\" -c http.sslkey=\"{agentCert.ClientCertificatePrivateKeyFile}\"");
                     }
                 }
-
+#if OS_WINDOWS
                 if (schannelSslBackend)
                 {
                     executionContext.Debug("Use SChannel SslBackend for git fetch.");
                     additionalFetchArgs.Add("-c http.sslbackend=\"schannel\"");
                 }
-
+#endif
                 // Prepare gitlfs url for fetch and checkout
                 if (gitLfsSupport)
                 {
@@ -823,12 +823,13 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
                             additionalSubmoduleUpdateArgs.Add($"-c http.{authorityUrl}.sslcert=\"{agentCert.ClientCertificateFile}\" -c http.{authorityUrl}.sslkey=\"{agentCert.ClientCertificatePrivateKeyFile}\"");
                         }
                     }
-
+#if OS_WINDOWS
                     if (schannelSslBackend)
                     {
                         executionContext.Debug("Use SChannel SslBackend for git submodule update.");
                         additionalSubmoduleUpdateArgs.Add("-c http.sslbackend=\"schannel\"");
                     }
+#endif                    
                 }
 
                 int exitCode_submoduleUpdate = await _gitCommandManager.GitSubmoduleUpdate(executionContext, targetPath, string.Join(" ", additionalSubmoduleUpdateArgs), checkoutNestedSubmodules, cancellationToken);

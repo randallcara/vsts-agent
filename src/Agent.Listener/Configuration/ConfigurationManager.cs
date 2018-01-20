@@ -424,6 +424,21 @@ namespace Microsoft.VisualStudio.Services.Agent.Listener.Configuration
 
             _term.WriteLine(StringUtil.Loc("SavedSettings", DateTime.UtcNow));
 
+            Boolean saveRuntimeOptions = false;
+            AgentRuntimeOptions runtimeOptions = new AgentRuntimeOptions();
+#if OS_WINDOWS
+            if (command.GitUseSChannel)
+            {
+                saveRuntimeOptions = true;
+                runtimeOptions.GitUseSecureChannel = true;
+            }
+#endif
+            if (saveRuntimeOptions)
+            {
+                Trace.Info("Save agent runtime options to disk.");
+                _store.SaveAgentRuntimeOptions(runtimeOptions);
+            }
+
 #if OS_WINDOWS
             // config windows service
             bool runAsService = command.GetRunAsService();
