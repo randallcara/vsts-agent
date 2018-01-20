@@ -207,8 +207,10 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
         // min git version that support add extra auth header.
         protected Version _minGitVersionSupportAuthHeader = new Version(2, 9);
 
+#if OS_WINDOWS
         // min git version that support override sslBackend setting.
         protected Version _minGitVersionSupportSSLBackendOverride = new Version(2, 14, 2);
+#endif
 
         // min git-lfs version that support add extra auth header.
         protected Version _minGitLfsVersionSupportAuthHeader = new Version(2, 1);
