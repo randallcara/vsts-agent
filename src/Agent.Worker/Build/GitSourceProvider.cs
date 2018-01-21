@@ -24,7 +24,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
         {
 #if OS_WINDOWS
             // check git version for SChannel SSLBackend (Windows Only)
-            bool schannelSslBackend = HostContext.GetService<IConfigurationStore>().GetAgentRuntimeOptions()?.GitUseSecureChannel ?? false;
+            bool schannelSslBackend = _runtimeOptions?.GitUseSecureChannel ?? false;
             if (schannelSslBackend)
             {
                 _gitCommandManager.EnsureGitVersion(_minGitVersionSupportSSLBackendOverride, throwOnNotMatch: true);
@@ -65,7 +65,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
         {
 #if OS_WINDOWS
             // check git version for SChannel SSLBackend (Windows Only)
-            bool schannelSslBackend = HostContext.GetService<IConfigurationStore>().GetAgentRuntimeOptions()?.GitUseSecureChannel ?? false;
+            bool schannelSslBackend = _runtimeOptions?.GitUseSecureChannel ?? false;
             if (schannelSslBackend)
             {
                 _gitCommandManager.EnsureGitVersion(_minGitVersionSupportSSLBackendOverride, throwOnNotMatch: true);
@@ -168,7 +168,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
 
 #if OS_WINDOWS
             // check git version for SChannel SSLBackend (Windows Only)
-            bool schannelSslBackend = HostContext.GetService<IConfigurationStore>().GetAgentRuntimeOptions()?.GitUseSecureChannel ?? false;
+            bool schannelSslBackend = _runtimeOptions?.GitUseSecureChannel ?? false;
             if (schannelSslBackend)
             {
                 _gitCommandManager.EnsureGitVersion(_minGitVersionSupportSSLBackendOverride, throwOnNotMatch: true);
@@ -202,6 +202,8 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
         private bool _useClientCert = false;
         private string _clientCertPrivateKeyAskPassFile = null;
 
+        protected AgentRuntimeOptions _runtimeOptions;
+
         protected IGitCommandManager _gitCommandManager;
 
         // min git version that support add extra auth header.
@@ -219,6 +221,12 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
         public abstract bool GitLfsUseAuthHeaderCmdlineArg { get; }
         public abstract void RequirementCheck(IExecutionContext executionContext, ServiceEndpoint endpoint);
         public abstract string GenerateAuthHeader(string username, string password);
+
+        public override void Initialize(IHostContext hostContext)
+        {
+            base.Initialize(HostContext);
+            _runtimeOptions = HostContext.GetService<IConfigurationStore>().GetAgentRuntimeOptions();
+        }
 
         public async Task GetSourceAsync(
             IExecutionContext executionContext,
@@ -301,7 +309,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
             Trace.Info($"acceptUntrustedCerts={acceptUntrustedCerts}");
 
 #if OS_WINDOWS
-            bool schannelSslBackend = HostContext.GetService<IConfigurationStore>().GetAgentRuntimeOptions()?.GitUseSecureChannel ?? false;
+            bool schannelSslBackend = _runtimeOptions?.GitUseSecureChannel ?? false;
             Trace.Info($"schannelSslBackend={schannelSslBackend}");
 #endif
 
